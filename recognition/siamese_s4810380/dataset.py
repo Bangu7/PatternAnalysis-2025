@@ -6,11 +6,11 @@ import os
 import pandas as pd
 from PIL import Image
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, Subset
 import random
 
 class MelSiameseDataset(Dataset):
-    """Dataset for pairing melanoma images for Siamese Network."""
+    """ Dataset for pairing melanoma images for Siamese Network. """
 
     def __init__(self, metadata, img_dir, transform=None):
         """ Initialises Dataset.
@@ -41,7 +41,7 @@ class MelSiameseDataset(Dataset):
 
             @return:
                 Tuple of decided image with its randomly decided pair
-                alon with a integer representing if they are a match.
+                along with a integer representing if they are a match.
         """
         # Retrieve image data of given index
         label = self.img_labels.iloc[idx, 2]
@@ -72,7 +72,47 @@ class MelSiameseDataset(Dataset):
 
         return img1, img2, torch.tensor(match, dtype=torch.float32)
 
-def create_dataloaders(metadata, img_dir, train_transform, val_test_trans, 
+class MelClassifierDataset(Dataset):
+    """ Dataset for pairing melanoma images for Classifier. """
+
+    def __init__(self, metadata, img_dir, transform=None):
+        """ Initialises Dataset.
+            
+            @params:
+                metadata: the fp for metadata of each image
+                img_dir: the location of all images for the dataset
+                transform: the image transform to the dataset
+        """
+        self.img_labels = pd.read_csv(metadata, index_col=0)
+        self.img_dir = img_dir
+        self.transform = transform
+
+    def __len__(self):
+        """ Returns length/size of dataset """
+        return len(self.img_labels)
+
+    def __getitem__(self, idx):
+        """ Gives the image and label associated with idx
+
+            @params:
+                idx: index of image to retrieve
+
+            @return:
+                Tuple of image and label.
+        """
+        # Find image name and convert it to pillow
+        img_name = self.img_labels.iloc[idx, 0]
+        label = torch.tensor(self.img_labels.iloc[idx, 2], dtype=torch.float32)
+        img_path = os.path.join(self.img_dir, f"{img_name}.jpg")
+        img = Image.open(img_path).convert("RGB")
+
+        # Transform if given
+        if self.transform:
+            img = self.transform(img)
+
+        return img, label
+
+def create_dataloaders(metadata, img_dir, train_transform, val_test_transform, 
                        batch_size=16, num_workers=4, train_split=0.7,
                        val_split=0.1, test_split=0.2, seed=7):
     """ Function to automatically retrive dataloaders and seperate
@@ -82,7 +122,7 @@ def create_dataloaders(metadata, img_dir, train_transform, val_test_trans,
             metadata: fp of metadata for images
             img_dir: fp of images
             train_tranform: image transform to training data
-            val_test_trans: image transform to validation and test data
+            val_test_transform: image transform to validation and test data
             batch_size: batch size for dataloaders
             num_workers: number of workers for each dataloader
             train_split: the amount of data assigned to training data
@@ -91,33 +131,52 @@ def create_dataloaders(metadata, img_dir, train_transform, val_test_trans,
             seed: random seed to be used for reproducability of data
 
         @return:
-            Returns tuple of three dataloaders generated using given params.
-            Training, validation, testing.
+            Returns two tuples of three dataloaders generated using given params.
+            Training, validation, testing for siamese and classifier respectively.
     """
-    full_data = MelSiameseDataset(metadata, img_dir)
-    size = len(full_data)
+    # Create the two Datasets from given data
+    full_siamese_data = MelSiameseDataset(metadata, img_dir)
+    full_classifier_data = MelClassifierDataset(metadata, img_dir)
 
-    # Calculate sizes of each dataset
+    size = len(full_siamese_data)
+    torch.manual_seed(seed)
+
+    # Calculate sizes of each dataset and shuffle indices
+    indices = torch.randperm(size).tolist()
     train_size = int(train_split * size)
     val_size = int(val_split * size)
     test_size = size - train_size - val_size
 
-    torch.manual_seed(seed)
+    # Split indices for train, val, and test
+    train_indices = indices[:train_size]
+    val_indices = indices[train_size:train_size + val_size]
+    test_indices = indices[train_size + val_size:]
 
-    # https://discuss.pytorch.org/t/torch-utils-data-dataset-random-split/32209/4
-    train_data, val_data, test_data = random_split(
-        full_data,
-        [train_size, val_size, test_size]
-    )
+    # Create subsets of data using the pytorch Subset
+    # https://stackoverflow.com/questions/47432168/taking-subsets-of-a-pytorch-dataset
+    subsets = {}
+    for name, idx in zip(['train', 'val', 'test'], [train_indices, val_indices, test_indices]):
+        subsets[f"{name}_siamese"] = Subset(full_siamese_data, idx)
+        subsets[f"{name}_classifier"] = Subset(full_classifier_data, idx)
 
-    # Applies transforms to subsets of data.
-    train_data.dataset.transform = train_transform
-    val_data.dataset.transform = val_test_trans
-    test_data.dataset.transform = val_test_trans
+    # Assign transforms
+    subsets['train_siamese'].dataset.transform = train_transform
+    subsets['val_siamese'].dataset.transform = val_test_transform
+    subsets['test_siamese'].dataset.transform = val_test_transform
 
-    # Uses datasets to make dataloaders.
-    train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=num_workers, shuffle=True)
-    val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=num_workers, shuffle=False)
-    test_loader = DataLoader(test_data, batch_size=batch_size, num_workers=num_workers, shuffle=False)
+    subsets['train_classifier'].dataset.transform = train_transform
+    subsets['val_classifier'].dataset.transform = val_test_transform
+    subsets['test_classifier'].dataset.transform = val_test_transform
 
-    return train_loader, val_loader, test_loader
+    # Create dataloaders for siamese
+    train_loader_siamese = DataLoader(subsets['train_siamese'], batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_loader_siamese = DataLoader(subsets['val_siamese'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader_siamese = DataLoader(subsets['test_siamese'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+    # Create dataloaders for classifier
+    train_loader_classifier = DataLoader(subsets['train_classifier'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    val_loader_classifier = DataLoader(subsets['val_classifier'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader_classifier = DataLoader(subsets['test_classifier'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+    return (train_loader_siamese, val_loader_siamese, test_loader_siamese), \
+           (train_loader_classifier, val_loader_classifier, test_loader_classifier)
