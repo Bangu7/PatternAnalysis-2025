@@ -3,12 +3,13 @@
 ######################
 
 import os
+import random
+import numpy as np
 import pandas as pd
 from PIL import Image
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset, WeightedRandomSampler
-import random
-import numpy as np
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+from sklearn.model_selection import train_test_split
 
 class MelSiameseDataset(Dataset):
     """ Dataset for pairing melanoma images for Siamese Network. """
@@ -17,11 +18,11 @@ class MelSiameseDataset(Dataset):
         """ Initialises Dataset.
             
             @params:
-                metadata: the fp for metadata of each image
+                metadata: the label data
                 img_dir: the location of all images for the dataset
                 transform: the image transform to the dataset
         """
-        self.img_labels = pd.read_csv(metadata, index_col=0)
+        self.img_labels = metadata.copy()
 
         # Split into positive and negative classes
         self.labels1 = self.img_labels[self.img_labels['target'] == 0]
@@ -76,11 +77,11 @@ class MelClassifierDataset(Dataset):
         """ Initialises Dataset.
             
             @params:
-                metadata: the fp for metadata of each image
+                metadata: the metadata of each image
                 img_dir: the location of all images for the dataset
                 transform: the image transform to the dataset
         """
-        self.img_labels = pd.read_csv(metadata, index_col=0)
+        self.img_labels = metadata.copy()
         self.img_dir = img_dir
         self.transform = transform
 
@@ -110,8 +111,7 @@ class MelClassifierDataset(Dataset):
         return img, label
 
 def create_dataloaders(metadata, img_dir, train_transform, val_test_transform, 
-                       batch_size=16, num_workers=4, train_split=0.7,
-                       val_split=0.1, test_split=0.2, seed=7):
+                       batch_size=16, num_workers=4, seed=7):
     """ Function to automatically retrive dataloaders and seperate
         the given dataset into train, validation, and test sets.
 
@@ -122,70 +122,47 @@ def create_dataloaders(metadata, img_dir, train_transform, val_test_transform,
             val_test_transform: image transform to validation and test data
             batch_size: batch size for dataloaders
             num_workers: number of workers for each dataloader
-            train_split: the amount of data assigned to training data
-            val_split: the amount of data assigned to validation data
-            test_split: the amount of data assigned to testing data
             seed: random seed to be used for reproducability of data
 
         @return:
             Returns two tuples of three dataloaders generated using given params.
             Training, validation, testing for siamese and classifier respectively.
     """
-    # Create the two Datasets from given data
-    full_siamese_data = MelSiameseDataset(metadata, img_dir)
-    full_classifier_data = MelClassifierDataset(metadata, img_dir)
 
-    size = len(full_siamese_data)
-    torch.manual_seed(seed)
+    df = pd.read_csv(metadata, index_col=0)
+    
+    # Split into train, val, test. Stratify helps class balance
+    train_df, temp_df = train_test_split(df, test_size=0.3, random_state=seed, stratify=df['target'])
+    val_df, test_df = train_test_split(temp_df, test_size=0.66, random_state=seed, stratify=temp_df['target'])
 
-    # Calculate sizes of each dataset and shuffle indices
-    indices = torch.randperm(size).tolist()
-    train_size = int(train_split * size)
-    val_size = int(val_split * size)
-    test_size = size - train_size - val_size
+    # Create datasets
+    train_siamese = MelSiameseDataset(train_df, img_dir, transform=train_transform)
+    val_siamese   = MelSiameseDataset(val_df, img_dir, transform=val_test_transform)
+    test_siamese  = MelSiameseDataset(test_df, img_dir, transform=val_test_transform)
 
-    # Split indices for train, val, and test
-    train_indices = indices[:train_size]
-    val_indices = indices[train_size:train_size + val_size]
-    test_indices = indices[train_size + val_size:]
+    train_classifier = MelClassifierDataset(train_df, img_dir, transform=train_transform)
+    val_classifier   = MelClassifierDataset(val_df, img_dir, transform=val_test_transform)
+    test_classifier  = MelClassifierDataset(test_df, img_dir, transform=val_test_transform)
 
-    # Create subsets of data using the pytorch Subset
-    # https://stackoverflow.com/questions/47432168/taking-subsets-of-a-pytorch-dataset
-    subsets = {}
-    for name, idx in zip(['train', 'val', 'test'], [train_indices, val_indices, test_indices]):
-        subsets[f"{name}_siamese"] = Subset(full_siamese_data, idx)
-        subsets[f"{name}_classifier"] = Subset(full_classifier_data, idx)
-
-    # Assign transforms
-    subsets['train_siamese'].dataset.transform = train_transform
-    subsets['val_siamese'].dataset.transform = val_test_transform
-    subsets['test_siamese'].dataset.transform = val_test_transform
-
-    subsets['train_classifier'].dataset.transform = train_transform
-    subsets['val_classifier'].dataset.transform = val_test_transform
-    subsets['test_classifier'].dataset.transform = val_test_transform
-
+    # Undersampling for classifier
     # AI Prompt: How can I implement an undersampler for the training dataLoader? (provided partial code)
-    def make_sampler(subset):
-        labels = subset.dataset.img_labels.iloc[subset.indices]['target'].values
-        class_weights = 1.0 / np.bincount(labels)
-        sample_weights = np.array([class_weights[t] for t in labels])
-        return WeightedRandomSampler(
-            weights=torch.DoubleTensor(sample_weights),
-            num_samples=len(sample_weights),
-            replacement=True
-        )
+    labels = train_df['target'].values
+    class_weights = 1.0 / np.bincount(labels)
+    sample_weights = np.array([class_weights[t] for t in labels])
+    sampler = WeightedRandomSampler(
+        weights=torch.DoubleTensor(sample_weights),
+        num_samples=len(sample_weights),
+        replacement=True
+    )
 
-    classifier_sampler = make_sampler(subsets['train_classifier'])
+    # Create DataLoaders
+    train_loader_siamese = DataLoader(train_siamese, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_loader_siamese   = DataLoader(val_siamese, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader_siamese  = DataLoader(test_siamese, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
-    # Create dataloaders for siamese
-    train_loader_siamese = DataLoader(subsets['train_siamese'], batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    val_loader_siamese = DataLoader(subsets['val_siamese'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    test_loader_siamese = DataLoader(subsets['test_siamese'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-    train_loader_classifier = DataLoader(subsets['train_classifier'], batch_size=batch_size, sampler=classifier_sampler, num_workers=num_workers)
-    val_loader_classifier = DataLoader(subsets['val_classifier'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    test_loader_classifier = DataLoader(subsets['test_classifier'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    train_loader_classifier = DataLoader(train_classifier, batch_size=batch_size, sampler=sampler, num_workers=num_workers)
+    val_loader_classifier   = DataLoader(val_classifier, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader_classifier  = DataLoader(test_classifier, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     return (train_loader_siamese, val_loader_siamese, test_loader_siamese), \
            (train_loader_classifier, val_loader_classifier, test_loader_classifier)
