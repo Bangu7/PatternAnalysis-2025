@@ -13,6 +13,7 @@ class SiameseNetwork(nn.Module):
         """ Initialise model """
         super().__init__()
         base = resnet18(weights=None, progress=False)
+        # Remove final layer that does classification
         self.base = nn.Sequential(*list(base.children()))[:-1]
         self.embedding_dim = 512
 
@@ -28,7 +29,7 @@ class SiameseNetwork(nn.Module):
                 If no img2: Return embedding of img1. 
         """
         # Forward pass img1
-        emb1 = self.base(emb1)
+        emb1 = self.base(img1)
         emb1 = emb1.view(emb1.size(0), -1) # Flatten
 
         if img2 is None:

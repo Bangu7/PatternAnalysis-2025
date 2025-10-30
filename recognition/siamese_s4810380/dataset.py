@@ -6,8 +6,9 @@ import os
 import pandas as pd
 from PIL import Image
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, DataLoader, Subset, WeightedRandomSampler
 import random
+import numpy as np
 
 class MelSiameseDataset(Dataset):
     """ Dataset for pairing melanoma images for Siamese Network. """
@@ -43,26 +44,22 @@ class MelSiameseDataset(Dataset):
                 Tuple of decided image with its randomly decided pair
                 along with a integer representing if they are a match.
         """
-        # Retrieve image data of given index
-        label = self.img_labels.iloc[idx, 2]
-        img_name1 = self.img_labels.iloc[idx, 0]
-        img_path = os.path.join(self.img_dir, f"{img_name1}.jpg")
-        img1 = Image.open(img_path).convert("RGB")
-
-        # Randomly pick which pair
+        # Randomly pick which type of pair
         if torch.rand(1) < 0.5:
             match = 0
             # Select opposite label
-            diff_class = self.labels2 if label == 0 else self.labels1
-            img_name2 = random.choice(diff_class.iloc[:, 0].values)
+            img_name1 = random.choice(self.labels1.iloc[:, 0].values)
+            img_name2 = random.choice(self.labels2.iloc[:, 0].values)
         else:
             match = 1
             # Select same label
-            same_class = self.labels1 if label == 0 else self.labels2
-            img_name2 = random.choice(same_class.iloc[:, 0].values)
+            label_choice = random.choice([0, 1])
+            class_df = self.labels1 if label_choice == 0 else self.labels2
+            img_name1, img_name2 = random.sample(list(class_df.iloc[:, 0].values), 2)
         
-        # Retrieve the second images based on randomly generated index
+        img_path1 = os.path.join(self.img_dir, f"{img_name1}.jpg")
         img_path2 = os.path.join(self.img_dir, f"{img_name2}.jpg")
+        img1 = Image.open(img_path1).convert("RGB")
         img2 = Image.open(img_path2).convert("RGB")
 
         # Transform images if given a transform
@@ -168,13 +165,25 @@ def create_dataloaders(metadata, img_dir, train_transform, val_test_transform,
     subsets['val_classifier'].dataset.transform = val_test_transform
     subsets['test_classifier'].dataset.transform = val_test_transform
 
+    # AI Prompt: How can I implement an undersampler for the training dataLoader? (provided partial code)
+    def make_sampler(subset):
+        labels = subset.dataset.img_labels.iloc[subset.indices]['target'].values
+        class_weights = 1.0 / np.bincount(labels)
+        sample_weights = np.array([class_weights[t] for t in labels])
+        return WeightedRandomSampler(
+            weights=torch.DoubleTensor(sample_weights),
+            num_samples=len(sample_weights),
+            replacement=True
+        )
+
+    classifier_sampler = make_sampler(subsets['train_classifier'])
+
     # Create dataloaders for siamese
     train_loader_siamese = DataLoader(subsets['train_siamese'], batch_size=batch_size, shuffle=True, num_workers=num_workers)
     val_loader_siamese = DataLoader(subsets['val_siamese'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
     test_loader_siamese = DataLoader(subsets['test_siamese'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
-    # Create dataloaders for classifier
-    train_loader_classifier = DataLoader(subsets['train_classifier'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    train_loader_classifier = DataLoader(subsets['train_classifier'], batch_size=batch_size, sampler=classifier_sampler, num_workers=num_workers)
     val_loader_classifier = DataLoader(subsets['val_classifier'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
     test_loader_classifier = DataLoader(subsets['test_classifier'], batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
