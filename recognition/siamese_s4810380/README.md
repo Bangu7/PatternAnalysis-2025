@@ -125,12 +125,12 @@ This means the classifier correctly identified majority of the benign lesions, b
 
 ### Example Predictions
 
-From the trained model, some example inputs with their outputted label are given in Figure 7:
+From the trained model, some example inputs with their output label are given in Figure 7:
 
 *Figure 7: Models' Predictions of 'un-labelled' images*
 ![pred](./images/pred.png)
 
-In this figure, the only malignant is ISIC_7788318, and the model correctly assigns it as such with a probability of 0.77. However, the model incorrectly predicted the other two images in row 2 as malignant, which is likely due to the appearance. From this example, we can see that the model appears to have a bias towards the size of the lesion as a heavy indicator as to whether a given lesion is cancerous. This over-reliance likely is what contributes to false-positives for large benign lesions.
+In this figure, the only malignant is ISIC_7788318, and the model correctly assigns it as such with a probability of 0.77. However, the model incorrectly predicted the other two images in row 2 as malignant, which is likely due to the appearance. From this example, we can see that the model appears to have a bias towards the size of the lesion as a heavy indicator as to whether a given lesion is cancerous. This over-reliance likely is what contributes to false positives for large benign lesions.
 
 ### Performance Summary on Test Set
 
@@ -145,6 +145,8 @@ Overall, the model achieved a 0.8806 AUC-ROC score (with 81.77% general accuracy
 ## Notes
 
 - This model was trained locally on a GTX 1060; thus, with better equipment, more training could be provided with more thorough hyperparameter tuning.
+- In future, training on the whole dataset with a sampler may provide better generalisation results if the models are tweaked accordingly.
+- Making a more modular dataset from the beginning would improve the clarity of the code.
 
 ## References
 
