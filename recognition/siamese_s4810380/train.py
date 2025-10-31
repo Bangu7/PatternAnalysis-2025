@@ -270,7 +270,9 @@ def eval_classifier(test_loader, siamese, classifier, device):
     siamese.eval()
     classifier.eval()
 
-    y_true, y_pred = [], []
+    y_true = []
+    y_pred = []
+    y_prob = []
     with torch.no_grad():
         for imgs, labels in test_loader:
             imgs = imgs.to(device)
@@ -282,11 +284,12 @@ def eval_classifier(test_loader, siamese, classifier, device):
             preds = (probs > 0.6).astype(int)
             y_true.extend(labels.numpy())
             y_pred.extend(preds)
+            y_prob.extend(probs)
 
     print("\nClassifier")
     print(f"Accuracy: {accuracy_score(y_true, y_pred):.4f}")
     print(f"F1 Score: {f1_score(y_true, y_pred):.4f}")
-    print(f"ROC-AUC: {roc_auc_score(y_true, y_pred):.4f}")
+    print(f"ROC-AUC: {roc_auc_score(y_true, y_prob):.4f}")
 
 if __name__ == "__main__":
 
