@@ -47,17 +47,21 @@ class MelSiameseDataset(Dataset):
         """
         # Randomly pick which type of pair
         if torch.rand(1) < 0.5:
+            # Select opposite labels
             match = 0
-            # Select opposite label
             img_name1 = random.choice(self.labels1.iloc[:, 0].values)
             img_name2 = random.choice(self.labels2.iloc[:, 0].values)
         else:
-            match = 1
             # Select same label
-            label_choice = random.choice([0, 1])
-            class_df = self.labels1 if label_choice == 0 else self.labels2
+            match = 1
+            if random.random() < 0.3:
+                class_df = self.labels1
+            else:
+                class_df = self.labels2
+
             img_name1, img_name2 = random.sample(list(class_df.iloc[:, 0].values), 2)
         
+        # Open images
         img_path1 = os.path.join(self.img_dir, f"{img_name1}.jpg")
         img_path2 = os.path.join(self.img_dir, f"{img_name2}.jpg")
         img1 = Image.open(img_path1).convert("RGB")
@@ -110,6 +114,45 @@ class MelClassifierDataset(Dataset):
 
         return img, label
 
+class MelPredictDataset(Dataset):
+    """ Dataset for predicting images without label. """
+
+    def __init__(self, metadata, img_dir, transform=None):
+        """ Initialises Dataset.
+            
+            @params:
+                metadata: the metadata of each image
+                img_dir: the location of all images for the dataset
+                transform: the image transform to the dataset
+        """
+        self.img_labels = metadata.copy()
+        self.img_dir = img_dir
+        self.transform = transform
+
+    def __len__(self):
+        """ Returns length/size of dataset """
+        return len(self.img_labels)
+
+    def __getitem__(self, idx):
+        """ Gives the image associated with idx
+
+            @params:
+                idx: index of image to retrieve
+
+            @return:
+                img loaded into python with its corresponding name 
+        """
+        # Find image name and convert it to pillow
+        img_name = self.img_labels.iloc[idx, 0]
+        img_path = os.path.join(self.img_dir, f"{img_name}.jpg")
+        img = Image.open(img_path).convert("RGB")
+
+        # Transform if given
+        if self.transform:
+            img = self.transform(img)
+
+        return img, img_name
+
 def create_dataloaders(metadata, img_dir, train_transform, val_test_transform, 
                        batch_size=16, num_workers=4, seed=7):
     """ Function to automatically retrive dataloaders and seperate
@@ -128,14 +171,30 @@ def create_dataloaders(metadata, img_dir, train_transform, val_test_transform,
             Returns two tuples of three dataloaders generated using given params.
             Training, validation, testing for siamese and classifier respectively.
     """
-
     df = pd.read_csv(metadata, index_col=0)
-    
-    # Split into train, val, test. Stratify helps class balance
-    train_df, temp_df = train_test_split(df, test_size=0.3, random_state=seed, stratify=df['target'])
-    val_df, test_df = train_test_split(temp_df, test_size=0.66, random_state=seed, stratify=temp_df['target'])
 
-    # Create datasets
+    # Seperate classes
+    ben_df = df[df['target'] == 0]
+    mel_df = df[df['target'] == 1]
+    print(f"Total benign: {len(ben_df)}, melanoma: {len(mel_df)}")
+
+    # Subsample benign based on ratio relative to melanoma count
+    num_benign = int(len(mel_df)*2.5)
+    ben_sampled = ben_df.sample(n=num_benign, random_state=seed, replace=False)
+    balanced_df = pd.concat([mel_df, ben_sampled]).sample(frac=1, random_state=seed)
+
+    # Output dataset properties
+    print(f"Using benign: {len(ben_sampled)}, melanoma: {len(mel_df)}")
+
+    # Stratified split
+    train_df, temp_df = train_test_split(
+        balanced_df, test_size=0.3, random_state=seed, stratify=balanced_df['target']
+    )
+    val_df, test_df = train_test_split(
+        temp_df, test_size=0.66, random_state=seed, stratify=temp_df['target']
+    )
+
+    # Datasets
     train_siamese = MelSiameseDataset(train_df, img_dir, transform=train_transform)
     val_siamese   = MelSiameseDataset(val_df, img_dir, transform=val_test_transform)
     test_siamese  = MelSiameseDataset(test_df, img_dir, transform=val_test_transform)
@@ -144,25 +203,13 @@ def create_dataloaders(metadata, img_dir, train_transform, val_test_transform,
     val_classifier   = MelClassifierDataset(val_df, img_dir, transform=val_test_transform)
     test_classifier  = MelClassifierDataset(test_df, img_dir, transform=val_test_transform)
 
-    # Undersampling for classifier
-    # AI Prompt: How can I implement an undersampler for the training dataLoader? (provided partial code)
-    labels = train_df['target'].values
-    class_weights = 1.0 / np.bincount(labels)
-    sample_weights = np.array([class_weights[t] for t in labels])
-    sampler = WeightedRandomSampler(
-        weights=torch.DoubleTensor(sample_weights),
-        num_samples=len(sample_weights),
-        replacement=True
-    )
-
-    # Create DataLoaders
+    # Dataloaders
     train_loader_siamese = DataLoader(train_siamese, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     val_loader_siamese   = DataLoader(val_siamese, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     test_loader_siamese  = DataLoader(test_siamese, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
-    train_loader_classifier = DataLoader(train_classifier, batch_size=batch_size, sampler=sampler, num_workers=num_workers)
+    train_loader_classifier = DataLoader(train_classifier, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     val_loader_classifier   = DataLoader(val_classifier, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     test_loader_classifier  = DataLoader(test_classifier, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
     return (train_loader_siamese, val_loader_siamese, test_loader_siamese), \
            (train_loader_classifier, val_loader_classifier, test_loader_classifier)
