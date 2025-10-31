@@ -4,7 +4,8 @@
 
 import torch
 import torch.nn as nn
-from torchvision.models import resnet18
+from torchvision.models import resnet18, ResNet18_Weights
+import torch.nn.functional as F
 
 class SiameseNetwork(nn.Module):
     """ Siamese Netowrk using ResNet as a base model """
@@ -12,10 +13,31 @@ class SiameseNetwork(nn.Module):
     def __init__(self):
         """ Initialise model """
         super().__init__()
-        base = resnet18(weights=None, progress=False)
+        # https://docs.pytorch.org/vision/main/models/generated/torchvision.models.resnet18.html#torchvision.models.ResNet18_Weights
+        base = resnet18(weights=ResNet18_Weights.DEFAULT)
         # Remove final layer that does classification
         self.base = nn.Sequential(*list(base.children()))[:-1]
-        self.embedding_dim = 512
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(0.2),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+        )
+
+    def forward_once(self, img):
+        """ On move forward (one image).
+
+            @params:
+                img: image to be embedded
+
+            @returns:
+                Embedded image, i.e. after layers and normalisation
+        """
+        emb = self.base(img)
+        emb = self.fc(emb)
+        return F.normalize(emb, p=2, dim=1)
 
     def forward(self, img1, img2=None):
         """ Forward processing of image pair.
@@ -29,26 +51,26 @@ class SiameseNetwork(nn.Module):
                 If no img2: Return embedding of img1. 
         """
         # Forward pass img1
-        emb1 = self.base(img1)
-        emb1 = emb1.view(emb1.size(0), -1) # Flatten
+        emb1 = self.forward_once(img1)
 
         if img2 is None:
             return emb1
 
         # Forward pass for img2
-        emb2 = self.base(img2)
-        emb2 = emb2.view(emb2.size(0), -1) # Flatten
+        emb2 = self.forward_once(img2)
+
         return emb1, emb2
 
 class BinaryClassifier(nn.Module):
     """ Binary classifer based on Siamese embeddings """
 
-    def __init__(self, emb_dim=512):
+    def __init__(self):
         """ Initialise Classifier model """
         super().__init__()
         # Simple classification network
         self.classifier = nn.Sequential(
-            nn.Linear(emb_dim, 256),
+            nn.Linear(128, 256),
+            nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(256, 1),
